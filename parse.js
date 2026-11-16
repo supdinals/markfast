@@ -1268,6 +1268,9 @@ function autolinkHtml(text, href, textMode) {
 const NO_CLOSERS = { '*': -1, _: -1, '~': -1 };
 
 function renderInline(ctx, src, textMode) {
+  // The paren flag is only read by link attempts, which need a '[' in this
+  // run; other runs leave it alone (a nested run's ')' is also this run's).
+  if (!src.includes('[')) return renderInlineRun(ctx, src, textMode);
   const prevParenPossible = ctx.linkParenPossible;
   ctx.linkParenPossible = prevParenPossible && src.includes(')');
   const out = renderInlineRun(ctx, src, textMode);
