@@ -32,6 +32,7 @@ export function escapeHtml(html, encode) {
   return html;
 }
 
+
 const NUMERIC_REF = /&#(?:(\d{1,7})|[Xx]([A-Fa-f0-9]{1,6}));/;
 const NUMERIC_REF_OR_AMP = /&#(?:(\d{1,7})|[Xx]([A-Fa-f0-9]{1,6}));|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/g;
 
@@ -50,7 +51,11 @@ export function decodeNumericRefs(text) {
 
 // encodeURI the href the way marked does; a href that cannot be encoded
 // makes the link render as plain text (null).
+const URL_NEEDS_WORK = /[% "<>\\^`{|}\[\]\x00-\x1F\x7F-\uFFFF]/;
 export function cleanUrl(href) {
+  // Most destinations are plain ASCII with no %25 to collapse: encodeURI
+  // would return them unchanged, so skip both calls.
+  if (!URL_NEEDS_WORK.test(href)) return href;
   try {
     return encodeURI(href).replace(/%25/g, '%');
   } catch {
@@ -486,7 +491,7 @@ function listToken(ctx, src) {
     let line = firstLine.replace(RE.leadingSpaceTab, (ws) => expandTabs(ws, bulletIndent));
     const nextNl = src.indexOf('\n');
     let nextLine = nextNl === -1 ? src : src.slice(0, nextNl);
-    let blankLine = !line.trim();
+    let blankLine = isBlankLine(line);
 
     let indent = 0;
     if (blankLine) {
@@ -515,6 +520,7 @@ function listToken(ctx, src) {
       // content character after up to N spaces; a line starting with
       // anything else (a letter, say) starts none of them.
       const probeDepth = Math.max(0, Math.min(3, indent - 1));
+      let linePending = null;
       while (src) {
         const lineNl = src.indexOf('\n');
         const rawLine = lineNl === -1 ? src : src.slice(0, lineNl);
@@ -536,27 +542,30 @@ function listToken(ctx, src) {
           if (hrRe.test(nextLine)) break;
         }
 
-        if (firstNonSpaceIndex(nextLineNoTabs) >= indent || !nextLine.trim()) {
+        if (firstNonSpaceIndex(nextLineNoTabs) >= indent || isBlankLine(nextLine)) {
           itemContents += '\n' + nextLineNoTabs.slice(indent);
         } else {
+          // The previous line, dedented, decides whether a lazy line can
+          // continue the paragraph. It is sliced only here, where it is read.
+          const prevLine = linePending === null ? line : linePending.slice(indent);
           if (blankLine) break;
-          if (firstNonSpaceIndex(line.replace(/\t/g, '    ')) >= 4) break;
-          if (fencesBegin.test(line)) break;
-          if (headingBegin.test(line)) break;
-          if (htmlBegin.test(line)) break;
-          if (hrRe.test(line)) break;
+          if (firstNonSpaceIndex(prevLine.replace(/\t/g, '    ')) >= 4) break;
+          if (fencesBegin.test(prevLine)) break;
+          if (headingBegin.test(prevLine)) break;
+          if (htmlBegin.test(prevLine)) break;
+          if (hrRe.test(prevLine)) break;
 
           // A lazy line that reads as a setext underline stays paragraph text.
           const setextContinuation = /^ {0,3}(?:=+|-+) *$/.test(nextLine)
-            && RE.lheading.test(line + '\n' + nextLine);
+            && RE.lheading.test(prevLine + '\n' + nextLine);
           itemContents += '\n' + (setextContinuation
             ? '    ' + nextLineNoTabs.replace(/^ {0,3}/, '')
             : nextLine);
         }
 
-        blankLine = !nextLine.trim();
+        blankLine = isBlankLine(nextLine);
         src = src.substring(rawLine.length + 1);
-        line = nextLineNoTabs.slice(indent);
+        linePending = nextLineNoTabs;
       }
     }
 
@@ -736,6 +745,19 @@ function firstContentChar(s) {
   while (i < 3 && s.charCodeAt(i) === 32) i++;
   const c = s.charCodeAt(i);
   return i === 3 && c === 32 ? undefined : s[i];
+}
+
+// Is this single line blank (only whitespace)? The fast scan covers the
+// ASCII whitespace a generated line ever holds; anything beyond it defers
+// to the exact /\s/ test.
+function isBlankLine(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 32 || c === 9 || c === 12 || c === 11 || c === 13) continue;
+    if (c < 128) return false;
+    return /^\s*$/.test(s);
+  }
+  return true;
 }
 
 // Index of the first character that is not a space, or -1: the scan
@@ -1244,7 +1266,18 @@ function renderInline(ctx, src, textMode) {
   return out;
 }
 
+const INLINE_SPECIAL = /[*_~`\[\\<!]/;
+const AUTOLINK_TRIGGER = /@|www\.|:\/\//;
+
 function renderInlineRun(ctx, src, textMode) {
+  // A run with nothing special in it is a single text chunk: no emphasis
+  // characters, no brackets, backslashes, backticks or tags, no hard break
+  // and nothing an extended autolink could start from.
+  if (!INLINE_SPECIAL.test(src) && !src.includes('  \n') && !AUTOLINK_TRIGGER.test(src)) {
+    const decoded = ctx.inRawBlock || !src.includes('&') ? src : decodeNumericRefs(src);
+    return textMode || ctx.inRawBlock ? decoded : escapeHtml(decoded);
+  }
+
   const needsMask = src.includes('*') || src.includes('_') || src.includes('~');
   const maskedSrc = needsMask ? maskSrc(ctx, src) : src;
   const hints = needsMask ? scanCloserHints(maskedSrc) : NO_CLOSERS;
@@ -1476,7 +1509,7 @@ export function parse(markdown) {
   tokens.links = ctx.links;
   ctx.tokens = tokens;
 
-  const src = markdown.replace(/\r\n|\r/g, '\n');
+  const src = markdown.includes('\r') ? markdown.replace(/\r\n|\r/g, '\n') : markdown;
   blockTokens(ctx, src, tokens);
 
   for (const job of ctx.queue) {
