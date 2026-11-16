@@ -298,6 +298,7 @@ const RE = {
 function newContext() {
   return {
     links: Object.create(null), // normalized label -> { href, title }
+    linkCount: 0,               // how many labels are registered
     queue: [],                  // inline jobs, in the order blocks created them
     tokens: null,               // the top-level token list (holds .links too)
     inLink: false,
@@ -906,6 +907,7 @@ function blockTokens(ctx, src, tokens = [], lastParagraphClipped = false) {
       } else {
         if (!ctx.tokens.links[token.tag]) {
           ctx.tokens.links[token.tag] = { href: token.href, title: token.title };
+          ctx.linkCount++;
         }
         tokens.push(token);
       }
@@ -983,14 +985,17 @@ function linkInText(ctx, text) {
   for (const match of text.matchAll(RE.blockSkip)) {
     if (RE.link.test(match[0]) && text.charAt(match.index - 1) !== '!') return true;
   }
-  for (const match of text.matchAll(RE.reflinkSearch)) {
-    const match0 = match[0];
-    const refStart = match0.lastIndexOf('[');
-    if (match0.charAt(0) === '!' || !Object.hasOwn(ctx.links, normalizeLabel(match0.slice(refStart + 1, -1)))) {
-      continue;
+  // With no registered labels no reference can resolve; skip the search.
+  if (ctx.linkCount > 0) {
+    for (const match of text.matchAll(RE.reflinkSearch)) {
+      const match0 = match[0];
+      const refStart = match0.lastIndexOf('[');
+      if (match0.charAt(0) === '!' || !Object.hasOwn(ctx.links, normalizeLabel(match0.slice(refStart + 1, -1)))) {
+        continue;
+      }
+      if (refStart > 1 && linkInText(ctx, match0.slice(1, refStart - 1))) continue;
+      return true;
     }
-    if (refStart > 1 && linkInText(ctx, match0.slice(1, refStart - 1))) continue;
-    return true;
   }
   return false;
 }
@@ -1000,7 +1005,7 @@ function linkInText(ctx, text) {
 // mask keeps the length it replaces, so positions line up with the source.
 function maskSrc(ctx, src) {
   let masked = src;
-  if (src.includes('[')) {
+  if (src.includes('[') && ctx.linkCount > 0) {
     const maskReflink = (match0) => {
       const refStart = match0.lastIndexOf('[');
       if (!Object.hasOwn(ctx.links, normalizeLabel(match0.slice(refStart + 1, -1)))) {
@@ -1024,7 +1029,9 @@ function maskSrc(ctx, src) {
       return match0;
     });
   }
-  if (masked.includes('[') || masked.includes('`') || masked.includes('<')) {
+  // blockSkip can only match a code span, a tag, or a bracket pair closed
+  // by a paren destination; without any of those shapes it cannot match.
+  if (masked.includes('`') || masked.includes('<') || masked.includes('](')) {
     masked = masked.replace(RE.blockSkip, (match0, _link, context) => {
       const offset = context ? context.length : 0;
       return match0.slice(0, offset) + '[' + 'a'.repeat(match0.length - offset - 2) + ']';
