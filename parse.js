@@ -459,8 +459,9 @@ function blockquoteToken(ctx, src) {
 function listToken(ctx, src) {
   let cap = RE.list.exec(src);
   if (!cap) return undefined;
-  const listSrc = src;
-  const taken = () => listSrc.length - src.length;
+  // Absolute offsets into src replace the shrinking-remainder slices: one
+  // slice per item for the bullet probe, and lines read by index.
+  let pos = 0;
   let bull = cap[1].trim();
   const ordered = bull.length > 1;
   const list = {
@@ -476,21 +477,22 @@ function listToken(ctx, src) {
   const itemRe = new RegExp(`^( {0,3}${bull})((?:[\t ][^\n]*)?(?:\n|$))`);
   let endsWithBlankLine = false;
 
-  while (src) {
+  while (pos < src.length) {
     let endEarly = false;
     let itemContents = '';
-    if (!(cap = itemRe.exec(src))) break;
-    if (RE.hr.test(src)) break; // the bullet was actually a thematic break
+    const rest = src.slice(pos);
+    if (!(cap = itemRe.exec(rest))) break;
+    if (RE.hr.test(rest)) break; // the bullet was actually a thematic break
 
-    const itemStart = taken();
-    src = src.substring(cap[0].length);
+    const itemStart = pos;
+    pos += cap[0].length;
 
     const firstNl = cap[2].indexOf('\n');
     const firstLine = firstNl === -1 ? cap[2] : cap[2].slice(0, firstNl);
     const bulletIndent = cap[1].length;
     let line = firstLine.replace(RE.leadingSpaceTab, (ws) => expandTabs(ws, bulletIndent));
-    const nextNl = src.indexOf('\n');
-    let nextLine = nextNl === -1 ? src : src.slice(0, nextNl);
+    const nextNl = src.indexOf('\n', pos);
+    let nextLine = nextNl === -1 ? src.slice(pos) : src.slice(pos, nextNl);
     let blankLine = isBlankLine(line);
 
     let indent = 0;
@@ -504,7 +506,7 @@ function listToken(ctx, src) {
     }
 
     if (blankLine && RE.blankLine.test(nextLine)) {
-      src = src.substring(nextLine.length + 1);
+      pos += nextLine.length + 1;
       endEarly = true;
     }
 
@@ -521,9 +523,9 @@ function listToken(ctx, src) {
       // anything else (a letter, say) starts none of them.
       const probeDepth = Math.max(0, Math.min(3, indent - 1));
       let linePending = null;
-      while (src) {
-        const lineNl = src.indexOf('\n');
-        const rawLine = lineNl === -1 ? src : src.slice(0, lineNl);
+      while (pos < src.length) {
+        const lineNl = src.indexOf('\n', pos);
+        const rawLine = lineNl === -1 ? src.slice(pos) : src.slice(pos, lineNl);
         nextLine = rawLine;
         const nextLineNoTabs = nextLine.charCodeAt(0) === 32 || nextLine.charCodeAt(0) === 9
           ? nextLine.replace(RE.leadingSpaceTab, (ws) => expandTabs(ws))
@@ -564,12 +566,12 @@ function listToken(ctx, src) {
         }
 
         blankLine = isBlankLine(nextLine);
-        src = src.substring(rawLine.length + 1);
+        pos += rawLine.length + 1;
         linePending = nextLineNoTabs;
       }
     }
 
-    const raw = listSrc.slice(itemStart, taken());
+    const raw = src.slice(itemStart, pos);
     if (!list.loose) {
       if (endsWithBlankLine) list.loose = true;
       else if (endsWithDoubleBlank(raw)) endsWithBlankLine = true;
@@ -592,7 +594,7 @@ function listToken(ctx, src) {
   } else {
     return undefined;
   }
-  list.raw = listSrc.slice(0, taken()).trimEnd();
+  list.raw = src.slice(0, pos).trimEnd();
 
   for (const item of list.items) {
     ctx.top = false;
